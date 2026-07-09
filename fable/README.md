@@ -192,6 +192,19 @@ examples/
   01_single_agent.py         ~80 lines: run() + fs_tools + a fresh-process pytest gate; reads its own trace.
   02_research_swarm.py       Orchestrator + 3 parallel researchers + rubric gate; per-role costs make the 15x honest.
   03_coding_agent.py         Full cascade: blueprint, red test, diff-scope-blocked implementer, refuter, checkpoint/resume.
+tests/
+  test_config.py             Tiers, budget rails, router escalation ladder.
+  test_prompts.py            Frontmatter stripping, slot resolution, no-placeholder-leakage invariant.
+  test_tools.py              Schema generation, execution semantics, spill shaping, path containment.
+  test_memory.py             Lesson dedupe, recall, redaction, checkpoints, containment.
+  test_trace.py              JSONL round-trip and all seven failure-mode detectors.
+  test_loop_mock.py          The full loop against a scripted fake client — rails, pressure, recovery.
+```
+
+Run the suite (fully offline — no API key, no network):
+
+```bash
+cd fable && pip install pytest && python -m pytest tests -q
 ```
 
 ## When to use FABLE
