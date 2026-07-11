@@ -651,17 +651,21 @@ class Agent:
             )
             import json as _json
 
+            # Redact per FIELD, not the serialized blob: redacting the whole
+            # JSON string can let the greedy secret regex eat a closing quote
+            # and corrupt the file into invalid JSON. Field-level redaction
+            # keeps feature_list.json parseable AND secret-free.
             features = [
                 {
                     "category": "blueprint",
-                    "description": step.action,
-                    "steps": [step.verifier],
+                    "description": redact(step.action),
+                    "steps": [redact(step.verifier)],
                     "passes": False,
                 }
                 for step in blueprint.steps
             ]
             (state / "feature_list.json").write_text(
-                redact(_json.dumps(features, indent=2)), encoding="utf-8"
+                _json.dumps(features, indent=2), encoding="utf-8"
             )
         except OSError:
             pass  # plan persistence is an aid; the in-memory blueprint rules
@@ -685,9 +689,14 @@ class Agent:
                 step.evidence_ids = list(evidence_ids)
         if self._memory is None:
             return
-        for step in blueprint.steps:
+        # Mark by INDEX, not step.action: feature_list.json is redacted on
+        # write (_persist_blueprint), so a secret-shaped action no longer
+        # matches the stored description -- and duplicate actions collide.
+        # features[i] is built in blueprint.steps order, so the index is a
+        # stable, redaction-proof key that mark_passed accepts directly.
+        for index in range(len(blueprint.steps)):
             try:
-                self._memory.mark_passed(step.action, evidence_ids)
+                self._memory.mark_passed(str(index), evidence_ids)
             except Exception:  # noqa: BLE001 -- feature-list drift must not
                 pass  # undo a genuinely-passing run; in-memory status stands
 

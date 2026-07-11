@@ -124,6 +124,50 @@ class TestCheckpoint:
         assert "## Goal" in path.read_text()
 
 
+class TestMarkPassed:
+    def test_secret_shaped_blueprint_persists_valid_json_and_marks_by_index(
+        self, memory
+    ):
+        # Regression: a secret-shaped step action must (1) not corrupt
+        # feature_list.json when redacted, and (2) still be markable passed.
+        # Redacting the serialized blob ate the closing quote -> invalid JSON;
+        # marking by step.action (redacted on disk) raised KeyError. The fix
+        # redacts per field and marks by index. This drives the real code path.
+        import json
+
+        from fable.config import FableConfig
+        from fable.loop import Agent, Blueprint, Step
+
+        agent = Agent(memory=memory)
+        blueprint = Blueprint(steps=[
+            Step(id="s1",
+                 action="Deploy after setting api_key = sk_live_abcdefghijklmnop",
+                 verifier="pytest -q"),
+            Step(id="s2", action="Write the summary", verifier="judgment"),
+        ])
+        agent._persist_blueprint(blueprint, FableConfig())
+
+        path = memory.state_dir / "feature_list.json"
+        raw = path.read_text(encoding="utf-8")
+        stored = json.loads(raw)                      # must NOT raise (valid JSON)
+        assert "sk_live_abcdefghijklmnop" not in raw  # secret redacted
+        assert [f["passes"] for f in stored] == [False, False]
+
+        # Marking flips every step's passes to true, keyed by index.
+        agent._mark_blueprint_passed(blueprint, ())
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        assert all(f["passes"] is True for f in stored)
+
+    def test_mark_passed_unknown_feature_raises(self, memory):
+        import json
+
+        (memory.state_dir / "feature_list.json").write_text(
+            json.dumps([]), encoding="utf-8"
+        )
+        with pytest.raises(KeyError):
+            memory.mark_passed("nope", ["ev1"])
+
+
 class TestContainmentAndScratch:
     def test_escaping_the_root_raises(self, memory):
         with pytest.raises(ContainmentError):
