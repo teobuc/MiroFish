@@ -473,7 +473,7 @@ class FableClient:
                 raise RuntimeError(
                     f"Structured repair call refused "
                     f"(stop_details={retry.stop_details!r})"
-                )
+                ) from first_error
             return json.loads(retry.text)  # let a second failure raise loudly
 
     def count_tokens(self, messages: list[dict], model: str) -> int:

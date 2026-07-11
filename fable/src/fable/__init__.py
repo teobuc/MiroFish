@@ -33,5 +33,5 @@ from fable.tools import tool, Tool
 from fable.verify import check, Gate, Check, Evidence
 from fable.config import FableConfig, Budget
 
-__all__ = ["run", "Agent", "RunResult", "tool", "Tool", "check", "Gate",
-           "Check", "Evidence", "FableConfig", "Budget"]
+__all__ = ["Agent", "Budget", "Check", "Evidence", "FableConfig", "Gate",
+           "RunResult", "Tool", "check", "run", "tool"]

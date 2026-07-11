@@ -33,7 +33,7 @@ from fable.config import FableConfig
 from fable.loop import Agent, RunResult
 from fable.verify import Check, Evidence, GateContext
 
-__all__ = ["EvalTask", "EvalReport", "GapClosureReport", "run_eval", "gap_closure"]
+__all__ = ["EvalReport", "EvalTask", "GapClosureReport", "gap_closure", "run_eval"]
 
 
 @dataclass(frozen=True)

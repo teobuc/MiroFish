@@ -78,7 +78,7 @@ class TestFableConfig:
             FableConfig(roles={"executor": RolePolicy("nonexistent", "high")})
 
     def test_rejects_task_budget_below_beta_minimum(self):
-        with pytest.raises(ValueError, match="20_000|20000"):
+        with pytest.raises(ValueError, match=r"20_000|20000"):
             FableConfig(task_budget_tokens=19_999)
 
     def test_rejects_non_positive_tunables(self):

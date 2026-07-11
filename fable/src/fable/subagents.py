@@ -266,6 +266,7 @@ def fan_out(
     *,
     max_parallel: int = 4,
     config: FableConfig | None = None,
+    memory: "Memory | None" = None,
 ) -> list[SubagentReport]:
     """Spawn several subagents concurrently (threads; sync everywhere else).
 
@@ -275,12 +276,15 @@ def fan_out(
 
     ``max_parallel`` caps concurrency: each live subagent holds a streaming
     connection and burns rate limit; 4 is a sane default for one API key.
+
+    ``memory`` (optional) is passed through to every :func:`spawn`; leave it
+    ``None`` (the default) for memoryless subagents.
     """
     config = config or FableConfig()
 
     def safe(brief: Brief) -> SubagentReport:
         try:
-            return spawn(brief, config=config)
+            return spawn(brief, config=config, memory=memory)
         except Exception as exc:  # noqa: BLE001 -- isolate sibling failures
             return SubagentReport(
                 digest=f"SUBAGENT FAILED before completion: {exc!r}",
@@ -300,6 +304,7 @@ def spawn_subagent_tool(
     *,
     reports: list[SubagentReport] | None = None,
     subagent_tools: Sequence[Tool] | None = None,
+    memory: "Memory | None" = None,
 ) -> Tool:
     """Package :func:`spawn` as a Tool so the ORCHESTRATING MODEL delegates.
 
@@ -313,11 +318,14 @@ def spawn_subagent_tool(
     host-side cost accounting -- the honest way to show the ~15x multiplier.
     ``subagent_tools``: tool list given to every spawned subagent (defaults
     to read-only ``fs_tools()``).
+    ``memory`` (optional): passed through to every :func:`spawn`; leave it
+    ``None`` (the default) for memoryless subagents.
     """
     resolved_config = config or FableConfig()
     collected = reports if reports is not None else []
     lock = threading.Lock()
     default_tools = tuple(subagent_tools) if subagent_tools is not None else None
+    default_memory = memory
 
     @tool(parallel_safe=True, name="spawn_subagent")
     def spawn_subagent(
@@ -348,7 +356,7 @@ def spawn_subagent_tool(
             role=role,
             tools=default_tools if default_tools is not None else tuple(fs_tools()),
         )
-        report = spawn(brief, config=resolved_config)
+        report = spawn(brief, config=resolved_config, memory=default_memory)
         with lock:
             collected.append(report)
         artifact_lines = "\n".join(f"- {p}" for p in report.artifact_paths) or "- (none)"

@@ -40,6 +40,29 @@ class TestAddLesson:
         assert len(lines) <= 31  # trigger line + 30
         assert "truncated" in lines[-1]
 
+    def test_add_lesson_persists_redacted_body(self, memory):
+        # Integration: add_lesson -> _write -> redact -> disk. A secret in a
+        # lesson body must never survive to the file (memory files get
+        # committed and pasted into prompts).
+        path = memory.add_lesson(
+            "when a leaked credential shows up in a traceback",
+            "The bug was a hard-coded api_key = sk_live_abcdefghijklmnop line.",
+        )
+        written = path.read_text()
+        assert "sk_live_abcdefghijklmnop" not in written
+        assert "[REDACTED]" in written
+
+    def test_slug_colliding_triggers_do_not_overwrite(self, memory):
+        # Two DIFFERENT triggers whose first 40 chars are identical must land
+        # in separate files instead of silently overwriting each other.
+        base = "when the very same long shared prefix appears here"
+        first = memory.add_lesson(base + " in case ALPHA", "body alpha")
+        second = memory.add_lesson(base + " in case BRAVO", "body bravo entirely")
+        assert first != second
+        assert first.exists() and second.exists()
+        assert "alpha" in first.read_text()
+        assert "bravo" in second.read_text()
+
 
 class TestRecall:
     def test_recall_hits_by_regex_with_path_and_line(self, memory):
