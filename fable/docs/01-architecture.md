@@ -29,7 +29,7 @@ evidence — all host-side, all deterministic, all testable without an API key.
 
 ## 2. The state machine
 
-```
+```text
                               ┌──────────────────────────────────────────────┐
                               │  CONTROL PLANE (host code, zero context $)   │
                               │  StopRails · Gates · Router · UsageLedger    │
@@ -178,7 +178,7 @@ Executed by `tools.execute()`, which enforces, in order:
 
 Import DAG (acyclic; authors and reviewers enforce it):
 
-```
+```text
 config ── stdlib only
 trace ── stdlib only
 client ──► config, trace
@@ -220,7 +220,7 @@ be done* — and models' completion claims are exactly as trustworthy as their
 introspection (docs/00-philosophy.md §1a). The harness, not the model,
 decides completion. Sequence:
 
-```
+```text
 model                       loop (host)                      gate (host)
   │                            │                                │
   │── end_turn + completion ──►│                                │

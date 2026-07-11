@@ -35,7 +35,7 @@ from typing import Any, Callable, ClassVar, Literal, Sequence
 from fable import prompts
 from fable.client import FableClient, FrozenPrefix, ModelTurn, UsageLedger
 from fable.config import Budget, EscalationExhausted, FableConfig, RolePolicy, Router
-from fable.memory import Checkpoint, Memory
+from fable.memory import Checkpoint, Memory, redact
 from fable.tools import Tool, ToolRegistry, execute
 from fable.trace import TraceEvent, TraceWriter
 from fable.verify import Check, Evidence, Gate, GateContext
@@ -310,11 +310,21 @@ class Agent:
             pressure = context_tokens / tier.context_window
             if pressure >= rails.checkpoint_pct and self._memory is not None:
                 cp_path = self._write_checkpoint(task, ledger, emit)
+                if cp_path is not None:
+                    return finish(
+                        "checkpointed",
+                        "Context pressure reached checkpoint threshold; state "
+                        "saved. Respawn a fresh session from "
+                        "memory.resume_prompt().",
+                        checkpoint_path=cp_path,
+                    )
+                # Write failed: do NOT claim the state was saved. There is no
+                # checkpoint to resume from, so end on a non-success status.
                 return finish(
-                    "checkpointed",
-                    "Context pressure reached checkpoint threshold; state saved. "
-                    "Respawn a fresh session from memory.resume_prompt().",
-                    checkpoint_path=cp_path,
+                    "overflow",
+                    "Context pressure reached the checkpoint threshold but the "
+                    "checkpoint write FAILED; state was NOT saved and the run "
+                    "cannot be safely resumed from memory.",
                 )
             if pressure >= rails.edit_pct:
                 reclaimed = _clear_old_tool_results(messages, config, scratch)
@@ -453,12 +463,19 @@ class Agent:
                 },
             )
             if gate_result.passed:
+                # Gate passed with evidence: the blueprint's steps are now
+                # genuinely done. Flip harness-owned step status and persist
+                # passes:true through the ONLY sanctioned path
+                # (Memory.mark_passed) so feature_list.json stops lying. The
+                # model never marks its own work done.
+                if blueprint is not None:
+                    self._mark_blueprint_passed(blueprint, gate_result.evidence)
                 summary = (report or {}).get("summary") or turn.text
                 status: Status = "ok"
                 return finish(status, summary, evidence=gate_result.evidence)
 
             gate_retries += 1
-            if gate_retries > config.gate_max_retries:
+            if gate_retries > self._gate.max_retries:
                 if self._gate.on_exhaust == "escalate" and not escalated:
                     try:
                         policy = router.escalate(policy)
@@ -538,7 +555,18 @@ class Agent:
         if self._memory is not None:
             state_dir = Path(getattr(self._memory, "root", config.memory_root)) / "state"
             try:
-                if state_dir.exists():
+                # Memory.__init__ always mkdir's state/, so its mere existence
+                # proves nothing -- a fresh run would get the resume litany.
+                # Gate resume on a prior session's actual persisted content: a
+                # checkpoint file, or a non-empty progress journal. (plan.md /
+                # feature_list.json are written at THIS run's start when a
+                # blueprint is present, so they are not a resume signal.)
+                progress = state_dir / "progress.md"
+                resuming = any(state_dir.glob("checkpoint-*.md")) or (
+                    progress.exists()
+                    and progress.read_text(encoding="utf-8").strip() != ""
+                )
+                if resuming:
                     parts.append(self._memory.resume_prompt())
                 else:
                     index = self._memory.index()
@@ -615,7 +643,12 @@ class Agent:
         state = root / "state"
         try:
             state.mkdir(parents=True, exist_ok=True)
-            (state / "plan.md").write_text(blueprint.to_markdown(), encoding="utf-8")
+            # Redact before writing, mirroring Memory._write: plan.md and
+            # feature_list.json get committed and pasted into prompts, so a
+            # secret-shaped token in an action/verifier must not land raw.
+            (state / "plan.md").write_text(
+                redact(blueprint.to_markdown()), encoding="utf-8"
+            )
             import json as _json
 
             features = [
@@ -628,10 +661,35 @@ class Agent:
                 for step in blueprint.steps
             ]
             (state / "feature_list.json").write_text(
-                _json.dumps(features, indent=2), encoding="utf-8"
+                redact(_json.dumps(features, indent=2)), encoding="utf-8"
             )
         except OSError:
             pass  # plan persistence is an aid; the in-memory blueprint rules
+
+    def _mark_blueprint_passed(
+        self, blueprint: Blueprint, evidence: tuple[Evidence, ...]
+    ) -> None:
+        """Gate passed with a blueprint active: mark the plan complete.
+
+        Two effects, both harness-owned: (1) flip each in-memory Step to
+        ``done`` and attach the gate's evidence ids; (2) persist ``passes:
+        true`` in feature_list.json via ``Memory.mark_passed`` -- the ONLY
+        sanctioned path that flips that flag. Persistence is best-effort (an
+        aid, like _persist_blueprint): a filesystem hiccup updates in-memory
+        status and lets the honest ``ok`` return stand.
+        """
+        evidence_ids = [e.name for e in evidence]
+        for step in blueprint.steps:
+            if step.status != "done":
+                step.status = "done"
+                step.evidence_ids = list(evidence_ids)
+        if self._memory is None:
+            return
+        for step in blueprint.steps:
+            try:
+                self._memory.mark_passed(step.action, evidence_ids)
+            except Exception:  # noqa: BLE001 -- feature-list drift must not
+                pass  # undo a genuinely-passing run; in-memory status stands
 
     def _request_completion_report(
         self,

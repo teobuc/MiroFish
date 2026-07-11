@@ -145,7 +145,11 @@ gate = Gate(
     on_exhaust="escalate",   # effort bump, then tier bump, then typed failure
 )
 
-memory = Memory(ws / ".fable" / "memory")
+# Memory (checkpoints + lessons) must live OUTSIDE ws. diff_scope allows only
+# rle.py, so a .fable/memory tree written inside the git workspace would surface
+# as an out-of-scope diff -- and the harness's own resume checkpoint would be
+# rejected by its own gate. Keep it in a sibling tempdir.
+memory = Memory(Path(tempfile.mkdtemp(prefix="fable-ex03-mem-")) / "memory")
 config = FableConfig()
 
 
@@ -210,8 +214,21 @@ if k > 1:
             config=config, role="executor",
         )
 
+    # Each attempt runs in its OWN fresh workspace (factory chdir's into it and
+    # jails tools there), so the eval task must NOT carry the original ws path --
+    # that path is outside every fresh root and would be rejected by containment.
+    # Reference the workspace generically; the default executor prompt fills
+    # {{workspace_root}} from the current working directory, so each attempt's
+    # agent resolves the concrete absolute path for its own fresh workspace.
+    eval_task = (
+        "Fix the bugs in rle.py in your workspace root so the pytest suite "
+        "passes. Scope: you may modify ONLY rle.py; the tests and everything "
+        "else are out of scope and mechanically enforced. Read the tests and "
+        "the module first; run nothing you have not read. Build absolute paths "
+        "by joining filenames onto your workspace root."
+    )
     report = run_eval(
-        [EvalTask(id="rle-fix", task=task, grader=check.command(PYTEST))],
+        [EvalTask(id="rle-fix", task=eval_task, grader=check.command(PYTEST))],
         factory,
         k=k,
     )

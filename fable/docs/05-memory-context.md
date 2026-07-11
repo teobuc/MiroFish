@@ -28,8 +28,13 @@ Claude API ([docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-c
 - **Prices (Opus 4.8, per MTok):** input $5.00, cache **write** $6.25
   (1.25x — 5-minute TTL), cache **read** $0.50 (0.1x). Sonnet-5:
   $3.00 / $3.75 / $0.30. Haiku-4-5: $1.00 / $1.25 / $0.10.
+  (Sonnet-5 is in an introductory window through 2026-08-31 — $2.00 input /
+  $10.00 output per MTok, reverting to the standard $3.00 / $15.00 after; the
+  1.25x/0.1x cache multipliers hold in both.)
 - **Minimum cacheable prefix:** 4096 tokens on Opus 4.8. Shorter prefixes
   silently don't cache — pad-free below that line, there is nothing to win.
+  (1024 tokens is the older Sonnet-4.5-era floor, not Opus 4.8's — do not
+  conflate them.)
 - **Cache reads do not count against rate limits** the way fresh input
   does — at scale this matters as much as the price.
 - **Verify, don't assume:** `response.usage.cache_read_input_tokens` is
@@ -141,7 +146,7 @@ JSON on disk, greppable, diffable, human-editable, no embeddings, no
 database. The layout is fixed — every FABLE component assumes these exact
 paths:
 
-```
+```text
 .fable/memory/
   MEMORY.md                      # the index — <=150 lines, always safe to load
   lessons/
@@ -200,7 +205,7 @@ existence.
 The `Checkpoint` schema is exactly what a *cold* successor needs and
 nothing else:
 
-```
+```text
 goal            — one sentence
 decisions       — each with its why (the why is what prevents re-litigating)
 files_touched   — paths only

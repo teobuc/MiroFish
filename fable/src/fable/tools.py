@@ -30,6 +30,7 @@ import hashlib
 import inspect
 import json
 import re
+import shlex
 import subprocess
 import time
 import types
@@ -91,11 +92,14 @@ _JSON_TYPES: dict[type, str] = {
 def _hint_to_schema(hint: Any) -> dict:
     """Translate a Python type hint to a JSON-schema fragment.
 
-    Supports the primitives, ``list[X]``, ``dict``, and optionals in both
-    spellings -- ``Optional[X]`` and the PEP 604 ``X | None`` (origin
-    ``types.UnionType``), which is the idiomatic form under this project's
-    own 3.10+ style rule. Anything unrecognized falls back to string --
-    loud simplicity beats a schema compiler nobody can debug.
+    Supports the primitives, ``list[X]``, and optionals in both spellings --
+    ``Optional[X]`` and the PEP 604 ``X | None`` (origin ``types.UnionType``),
+    which is the idiomatic form under this project's own 3.10+ style rule.
+    Anything unrecognized falls back to string -- loud simplicity beats a
+    schema compiler nobody can debug.
+
+    ``dict``-typed params are REJECTED (see below), consistent with this
+    module's strict-schema stance.
     """
     origin = get_origin(hint)
     if origin is typing.Union or origin is types.UnionType:
@@ -108,7 +112,22 @@ def _hint_to_schema(hint: Any) -> dict:
         items = _hint_to_schema(args[0]) if args else {"type": "string"}
         return {"type": "array", "items": items}
     if origin is dict or hint is dict:
-        return {"type": "object", "additionalProperties": False}
+        # Reject rather than emit a schema. A free-form mapping has no
+        # model-describable key set, so under this module's strict design
+        # (`strict: True`, `additionalProperties: false`) the only faithful
+        # object schema -- additionalProperties:false -- rejects every
+        # non-empty mapping, while the permissive alternative
+        # (additionalProperties:true) is incompatible with strict tool
+        # validation. Failing loud at registration matches how *args/**kwargs
+        # and undocumented tools are handled: force an explicit,
+        # model-describable parameter list (declare fields, or take a JSON
+        # string the tool parses itself).
+        raise ValueError(
+            "dict-typed tool parameters are not supported: a free-form "
+            "mapping has no model-describable key set for a strict schema. "
+            "Declare explicit parameters, or accept a JSON string the tool "
+            "parses itself."
+        )
     if hint in _JSON_TYPES:
         return {"type": _JSON_TYPES[hint]}
     return {"type": "string"}
@@ -431,6 +450,45 @@ def _contained(path_str: str, root: Path | None) -> Path:
     return resolved
 
 
+def _contained_base(path_str: str, root: Path | None) -> Path:
+    """Resolve a glob/grep base directory, enforcing containment when rooted.
+
+    Unlike :func:`_contained`, this accepts relative paths -- glob and
+    grep_search default their base to ``"."``. When ``root`` is set, the base
+    is resolved against it (relative paths join onto the root; absolute paths
+    are honoured as given) and any result that escapes the root is rejected.
+    When ``root`` is None (unrooted) the path is used verbatim, preserving the
+    original unanchored behavior.
+    """
+    if root is None:
+        return Path(path_str)
+    candidate = Path(path_str)
+    anchored = candidate if candidate.is_absolute() else root / candidate
+    resolved = anchored.resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        raise ValueError(
+            f"Path {resolved} escapes the workspace root {root}."
+        ) from None
+    return resolved
+
+
+def _within(path: Path, root: Path | None) -> bool:
+    """True when ``path`` resolves inside ``root`` (always True when unrooted).
+
+    Guards against ``..`` embedded in a *pattern* (as opposed to the base
+    dir), which can otherwise walk a contained base back out of the root.
+    """
+    if root is None:
+        return True
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def fs_tools(root: Path | None = None) -> list[Tool]:
     """Filesystem tool set: read_file, glob, grep_search, edit_file.
 
@@ -464,8 +522,11 @@ def fs_tools(root: Path | None = None) -> list[Tool]:
         layout before reading. Returns one matching path per line, capped;
         never returns file contents.
         """
-        base = Path(base_dir)
-        matches = sorted(str(p) for p in base.glob(pattern) if p.is_file())
+        base = _contained_base(base_dir, anchor)
+        matches = sorted(
+            str(p) for p in base.glob(pattern)
+            if p.is_file() and _within(p, anchor)
+        )
         if not matches:
             return f"No files match {pattern!r} under {base}."
         capped = matches[:_GREP_MATCH_CAP]
@@ -479,11 +540,11 @@ def fs_tools(root: Path | None = None) -> list[Tool]:
         match lines (capped), never full file dumps.
         """
         regex = re.compile(pattern)
-        base = Path(search_path)
+        base = _contained_base(search_path, anchor)
         hits: list[str] = []
         candidates = [base] if base.is_file() else sorted(base.glob(file_glob))
         for candidate in candidates:
-            if not candidate.is_file():
+            if not candidate.is_file() or not _within(candidate, anchor):
                 continue
             try:
                 text = candidate.read_text(encoding="utf-8", errors="replace")
@@ -547,18 +608,34 @@ def shell_tool(allowlist: Sequence[str] | None = None, timeout_s: int = 120) -> 
         smallest command that answers the question.
         """
         if allowed is not None:
-            head = command.strip().split()[0] if command.strip() else ""
-            if head not in allowed:
+            # Allowlist mode: parse into argv and run WITHOUT a shell, so
+            # metacharacters (';', '&&', '|', '$(...)') cannot smuggle a second
+            # command past the single-token check. Validate the real argv[0].
+            argv = shlex.split(command)
+            if not argv:
+                raise ValueError("Empty command; nothing to run.")
+            if argv[0] not in allowed:
                 raise ValueError(
-                    f"Command {head!r} is not in the allowlist {list(allowed)}."
+                    f"Command {argv[0]!r} is not in the allowlist {list(allowed)}."
                 )
-        completed = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
+            completed = subprocess.run(
+                argv,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+        else:
+            # No allowlist: unrestricted-by-design. A full shell (pipes,
+            # redirection, chaining) is the point when the caller opts out of
+            # allowlisting entirely.
+            completed = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
         body = (completed.stdout or "") + (completed.stderr or "")
         return f"{body}\n[exit code: {completed.returncode}]"
 

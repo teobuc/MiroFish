@@ -105,6 +105,15 @@ class TestDetectors:
         findings = detect_failures(write_trace(tmp_path, events))
         assert any(f["mode"] == "verification_skipping" for f in findings)
 
+    def test_verification_skipping_when_ok_run_ran_no_tools_at_all(self, tmp_path):
+        # An ok run with ZERO tool_results is the strongest verification
+        # skipping: nothing was exercised. It must flag even with no
+        # tool_result events present (the old 'and tool_results' clause
+        # wrongly suppressed this case).
+        events = [event(1, "run_end", status="ok")]
+        findings = detect_failures(write_trace(tmp_path, events))
+        assert any(f["mode"] == "verification_skipping" for f in findings)
+
     def test_fabricated_status_on_failed_claim_audit(self, tmp_path):
         events = ok_run(
             event(5, "gate_check", checks=["claims"],

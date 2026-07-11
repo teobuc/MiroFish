@@ -21,6 +21,11 @@ API facts, not estimates):
 | mid | `claude-sonnet-5` | $3.00 | $15.00 | $3.75 | $0.30 | 1M |
 | cheap | `claude-haiku-4-5` | $1.00 | $5.00 | $1.25 | $0.10 | 200K |
 
+`claude-sonnet-5` is in an introductory pricing window through **2026-08-31**:
+$2.00 input / $10.00 output per MTok (cache write/read scale at the usual
+1.25x/0.1x), reverting to the standard $3.00 / $15.00 shown above afterward.
+The worked model below uses the standard rates as the durable planning number.
+
 ## 1. The worked cost model: 1,000 agent-hours a month
 
 Assumptions, stated so you can re-derive every number: 1,000 agent-hours per
@@ -31,7 +36,7 @@ narration on).
 
 **Rung 0 — naive: all-Opus, no caching, no routing.**
 
-```
+```text
 input   45 × 115K × $5.00/M  = $25.88 / agent-hour
 output  45 ×   7K × $25.00/M = $ 7.88 / agent-hour
 total                        ≈ $33.75 / agent-hour  →  ≈ $34K / month
@@ -43,7 +48,7 @@ cache reads, 5.5% fresh input, 3.5% cache writes — an illustrative
 steady-state mix like the 45 calls/hour above, not a measured benchmark;
 read your own `cache_hit_ratio` before trusting it:
 
-```
+```text
 blended input price factor = 0.91×0.1 + 0.055×1.0 + 0.035×1.25 ≈ 0.189  (≈ 5.3x cut)
 input   $25.88 → $4.88 / agent-hour
 total   ≈ $12.8 / agent-hour  →  ≈ $12.8K / month
@@ -63,7 +68,7 @@ per-call arithmetic above hides. Net of an assumed ~15% retry overhead,
 the model pencils routed workloads in at 2–3x; call it 2.5x — again an
 illustrative assumption of this worked model, not ledger data:
 
-```
+```text
 total   ≈ $12.8K → ≈ $5.1K / month
 ```
 
@@ -75,7 +80,7 @@ dominant line ($25/MTok on strong). Mechanical roles at `effort="low"` with
 thinking off emit 5–10x fewer output tokens than xhigh on the same step, and
 they were routed to cheap output prices anyway:
 
-```
+```text
 total   ≈ $3.5–5K / month  (modeled, under all the assumptions above)
 ```
 
@@ -116,7 +121,7 @@ is arithmetic. Let one cheap attempt cost `c` and one strong attempt cost
 `s ≈ 5c` (the strong/cheap price ratio), with up to 3 cheap attempts before
 escalating to strong, and per-attempt cheap pass rate `p`:
 
-```
+```text
 E[cost] = c × (1 + q + q²) + s × q³        where q = 1 − p
 ```
 
@@ -176,7 +181,7 @@ Every run writes an append-only JSONL of `TraceEvent`s
 (`fable/trace.py`) — one event per loop action, host-side, zero context
 cost:
 
-```
+```text
 event ∈ { run_start, model_turn, tool_call, tool_result, gate_check,
           rail_trip, pressure, checkpoint, escalation, run_end }
 detail: tool, args_hash, result_hash, exit_code, stop_reason,

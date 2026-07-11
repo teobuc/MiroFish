@@ -281,7 +281,10 @@ def detect_failures(reader: TraceReader) -> list[dict]:
     ran_decisive_command = any(
         event.detail.get("exit_code") is not None for event in tool_results
     )
-    if end_status in _OK_STATUSES and tool_results and not ran_decisive_command:
+    # An ok run with ZERO tool results is the strongest form of verification
+    # skipping (nothing was exercised at all), so it must flag too -- do NOT
+    # gate this on ``tool_results`` being non-empty.
+    if end_status in _OK_STATUSES and not ran_decisive_command:
         flag(
             "verification_skipping",
             f"run ended {end_status!r} but no command with an exit code ran; "

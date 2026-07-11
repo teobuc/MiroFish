@@ -28,7 +28,7 @@ failure. The order is a cost gradient — each rung is roughly 10–100x more
 expensive than the last, so the cheap rungs act as filters for the
 expensive ones:
 
-```
+```text
 1. Claim audit      — deterministic script, zero tokens
 2. Mechanical       — commands re-run in a FRESH subprocess
 3. Judged           — one structured-output rubric call, fresh context

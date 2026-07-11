@@ -36,6 +36,10 @@ REPO = Path(__file__).resolve().parents[1]   # the FABLE tree: our research corp
 OUT = REPO.parent / "fable-ex02-out"
 OUT.mkdir(exist_ok=True)
 os.chdir(OUT)                                # gate + trace anchor here
+# OUT persists between runs; a leftover report.md would satisfy the
+# file_exists gate even if THIS run never wrote one. Clear it first so the
+# gate certifies only what this run actually produces.
+(OUT / "report.md").unlink(missing_ok=True)
 
 config = FableConfig()  # researcher role defaults to claude-sonnet-5 @ medium
 

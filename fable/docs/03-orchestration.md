@@ -97,7 +97,7 @@ is the workhorse pattern; reach for it before anything with `spawn` in it.
 
 **Topology.**
 
-```
+```text
 task ──► [stage A] ──gate──► [stage B] ──gate──► [stage C] ──gate──► done
               │                   │                   │
               ▼                   ▼                   ▼
@@ -164,7 +164,7 @@ only for genuinely decomposable research.
 
 **Topology.**
 
-```
+```text
                  ┌──► [worker: source A] ──► digest + scratch/a.md ──┐
 [orchestrator] ──┼──► [worker: source B] ──► digest + scratch/b.md ──┼──► [synthesis] ──gate──► done
   (strong)       └──► [worker: source C] ──► digest + scratch/c.md ──┘
@@ -237,13 +237,13 @@ smart model.*
 
 **Topology.**
 
-```
+```text
 [blueprint author: strong/xhigh]
         │  Blueprint: steps with per-step `verifier` field
         ▼
    ┌─ step s1  verifier: "pytest tests/test_convert.py -q" ──► route: mid tier ─┐
    │                                                            verify-and-retry │
-   ├─ step s2  verifier: "ruff check src/ --exit-zero==no" ──► route: mid tier ─┤──► gate ──► done
+   ├─ step s2  verifier: "ruff check src/" ─────────────────► route: mid tier ─┤──► gate ──► done
    │                                                                             │
    └─ step s3  verifier: "judgment" ─────────────────────────► route: strong ───┘
                                         (gate fail x N ──► Router.escalate: effort↑ then tier↑)
@@ -256,9 +256,15 @@ verifier is the literal `"judgment"` pins to the strong tier, because
 nothing downstream can catch its mistakes mechanically.
 
 **Wall-clock / cost.** Cheap-with-verifier beats one strong pass whenever
-the cheap tier's per-step pass rate clears ~40%: at $3/$15 vs $5/$25,
-`mid + 2 retries` costs at most ~1.8x one mid attempt ≈ 1.1x one strong
-attempt, *and* every retry is gate-verified where the strong pass is not.
+the cheaper tier's per-step pass rate clears ~40% — but cost it as an
+*expectation*, not a worst case. With one cheap attempt costing `c`, a strong
+attempt ≈ `5c` (the strong/cheap price ratio), up to 3 cheap tries before
+escalating, and `q = 1 − p`, the expected cost is
+`E = c·(1 + q + q²) + 5c·q³` — the same formula tabulated in
+[docs/06-operations.md](06-operations.md) §3. At `p ≈ 0.4` that lands near
+`3.04c ≈ 0.6x` one strong pass (~39% cheaper); three cheap tries *alone* cap
+at `3c` worst-case, *and* every retry is gate-verified where the strong pass
+is not.
 Latency gains come from effort routing: mechanical steps at `low` effort
 emit a fraction of the output tokens ($25/MTok on Opus makes output the
 bill). Full arithmetic in [docs/06-operations.md](06-operations.md).
@@ -317,7 +323,7 @@ every place this API is misused," "fix everything flagged by the audit,"
 
 **Topology.**
 
-```
+```text
 [session 1] ──85% pressure──► Checkpoint ──► [session 2, fresh window] ──► ... ──► [session N]
      │        to memory/           boots from resume_prompt():                 dry: two consecutive
      ▼                             pwd → git log → progress.md →               sessions find nothing
@@ -379,7 +385,7 @@ the ladder ([docs/04-verification.md](04-verification.md)).
 
 **Topology.**
 
-```
+```text
 [generator] ──► artifact ──► [refuter: strong/high, FRESH context]
                                   │  sees artifacts + tool outputs ONLY
                                   │  never the generator's rationale
@@ -444,7 +450,7 @@ refuters with disjoint charters.
 
 **Topology.**
 
-```
+```text
               ┌──► [refuter: correctness]   "one input where behavior is wrong"      ─┐
 artifact ─────┼──► [refuter: security]      "one exploitable input or leaked secret"  ─┼──► conjunctive
               └──► [refuter: requirements]  "one spec'd requirement not met"          ─┘    (any hit fails)
@@ -510,7 +516,7 @@ plus a refuter (§2.5), not a panel.
 
 **Topology.**
 
-```
+```text
                  ┌──► [judge sample 1] ─► "YES" ─┐
 discrete Q ──────┼──► [judge sample 2] ─► "YES" ─┼──► modal answer + agreement
                  └──► [judge sample 3] ─► "NO"  ─┘        agreement < 2/3 ──► escalate,
@@ -566,7 +572,7 @@ catches what's *missing*.
 
 **Topology.**
 
-```
+```text
 requirements ──► [enumerator]* ──► claimed-coverage list (or reuse spec/feature_list.json)
                                           │
 artifact ──────────────────────► [critic: fresh context]

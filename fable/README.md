@@ -109,6 +109,8 @@ judged rubric and an adversarial refuter. The harness sets done.
 ```bash
 pip install anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
+# FABLE is not yet packaged — run from a checkout with src/ on the path:
+cd fable && export PYTHONPATH=src
 ```
 
 ```python

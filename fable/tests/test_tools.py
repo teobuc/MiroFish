@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from fable.client import UsageLedger
-from fable.tools import Tool, ToolRegistry, execute, fs_tools, tool
+from fable.tools import Tool, ToolRegistry, execute, fs_tools, shell_tool, tool
 
 
 @tool(parallel_safe=True)
@@ -179,3 +179,88 @@ class TestFsToolsContainment:
             registry, tmp_path,
         )
         assert blocks[0]["is_error"] is True
+
+    def test_glob_absolute_base_outside_root_is_rejected(self, tmp_path):
+        (tmp_path / "jail").mkdir()
+        (tmp_path / "secret.txt").write_text("classified\n")
+        registry = ToolRegistry(fs_tools(root=tmp_path / "jail"))
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "glob",
+              "input": {"pattern": "*.txt", "base_dir": str(tmp_path)}}],
+            registry, tmp_path,
+        )
+        assert blocks[0]["is_error"] is True
+        assert "escapes the workspace root" in blocks[0]["content"]
+        assert "classified" not in blocks[0]["content"]
+
+    def test_grep_relative_traversal_out_of_root_is_rejected(self, tmp_path):
+        (tmp_path / "jail").mkdir()
+        (tmp_path / "secret.txt").write_text("password=hunter2\n")
+        registry = ToolRegistry(fs_tools(root=tmp_path / "jail"))
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "grep_search",
+              "input": {"pattern": "password", "search_path": "..",
+                        "file_glob": "*.txt"}}],
+            registry, tmp_path,
+        )
+        assert blocks[0]["is_error"] is True
+        assert "escapes the workspace root" in blocks[0]["content"]
+        assert "hunter2" not in blocks[0]["content"]
+
+    def test_glob_pattern_traversal_out_of_root_is_filtered(self, tmp_path):
+        (tmp_path / "jail").mkdir()
+        (tmp_path / "secret.txt").write_text("classified\n")
+        registry = ToolRegistry(fs_tools(root=tmp_path / "jail"))
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "glob",
+              "input": {"pattern": "../*.txt"}}],
+            registry, tmp_path,
+        )
+        # '..' in the pattern must not leak a file living outside the root.
+        assert "secret.txt" not in blocks[0]["content"]
+
+
+class TestShellAllowlist:
+    def test_metacharacter_injection_is_blocked(self, tmp_path):
+        marker = tmp_path / "pwned"
+        registry = ToolRegistry([shell_tool(allowlist=["echo"])])
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "shell",
+              "input": {"command": f"echo hi; touch {marker}"}}],
+            registry, tmp_path,
+        )
+        # echo ran (its own argv), but the chained 'touch' never executed.
+        assert blocks[0]["is_error"] is False
+        assert not marker.exists(), "shell=False must not run the injected command"
+        assert "touch" in blocks[0]["content"]  # echoed literally, not executed
+
+    def test_allowed_command_still_runs(self, tmp_path):
+        registry = ToolRegistry([shell_tool(allowlist=["echo"])])
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "shell",
+              "input": {"command": "echo hello"}}],
+            registry, tmp_path,
+        )
+        assert blocks[0]["is_error"] is False
+        assert "hello" in blocks[0]["content"]
+        assert "[exit code: 0]" in blocks[0]["content"]
+
+    def test_disallowed_first_token_is_rejected(self, tmp_path):
+        registry = ToolRegistry([shell_tool(allowlist=["echo"])])
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "shell",
+              "input": {"command": "rm -rf /"}}],
+            registry, tmp_path,
+        )
+        assert blocks[0]["is_error"] is True
+        assert "allowlist" in blocks[0]["content"]
+
+    def test_empty_command_in_allowlist_mode_is_rejected(self, tmp_path):
+        registry = ToolRegistry([shell_tool(allowlist=["echo"])])
+        blocks = _execute(
+            [{"type": "tool_use", "id": "t", "name": "shell",
+              "input": {"command": "   "}}],
+            registry, tmp_path,
+        )
+        assert blocks[0]["is_error"] is True
+        assert "Empty command" in blocks[0]["content"]

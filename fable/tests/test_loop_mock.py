@@ -14,8 +14,11 @@ import fable.loop as loop_module
 from fable import run
 from fable.client import ModelTurn, UsageLedger
 from fable.config import Budget, FableConfig
+from fable.loop import Blueprint, Step
+from fable.memory import Checkpoint, Memory
 from fable.tools import tool
 from fable.trace import TraceReader
+from fable.verify import Check, Evidence, Gate
 
 USAGE = {
     "input_tokens": 1_000,
@@ -231,3 +234,120 @@ class TestTraceIntegration:
         run("observe me", on_event=seen.append)
         assert [e.event for e in seen][0] == "run_start"
         assert [e.event for e in seen][-1] == "run_end"
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests for the loop.py fixes.
+
+
+def _passing_check(name="always"):
+    return Check(
+        name=name, kind="mechanical",
+        run=lambda ctx: Evidence(name=name, passed=True),
+    )
+
+
+def _failing_check(name="never"):
+    return Check(
+        name=name, kind="mechanical",
+        run=lambda ctx: Evidence(name=name, passed=False, detail="deliberate"),
+    )
+
+
+class TestGateRetryLimit:
+    def test_gate_uses_its_own_max_retries_not_config(self, tmp_path):
+        # Gate.max_retries=0 must exhaust after the FIRST failing gate pass,
+        # even though config.gate_max_retries defaults to 3. The old code
+        # compared against config and ignored a caller-supplied Gate.
+        gate = Gate(checks=(_failing_check(),), max_retries=0, on_exhaust="fail")
+        FakeClient.script = [text_turn("claiming done")]
+        result = run("do the thing", verify=gate)
+        assert result.status == "failed_gate"
+        gate_checks = [
+            e for e in TraceReader(result.trace_path).events()
+            if e.event == "gate_check"
+        ]
+        assert len(gate_checks) == 1  # exactly one failed pass, then exhaust
+
+
+class TestBlueprintCompletion:
+    def test_passing_gate_marks_blueprint_steps_and_persists_passes(self, tmp_path):
+        mem = Memory(root=tmp_path / "mem")
+        bp = Blueprint(steps=[Step(id="s1", action="add feature X",
+                                   verifier="pytest")])
+        gate = Gate(checks=(_passing_check(),), max_retries=1)
+        agent = loop_module.Agent(verify=gate, memory=mem)
+        FakeClient.script = [text_turn("all done")]
+        result = agent.run("task", blueprint=bp)
+        assert result.status == "ok"
+        # in-memory step flipped (harness-owned status)
+        assert bp.steps[0].status == "done"
+        assert bp.steps[0].evidence_ids == ["always"]
+        # persisted feature_list.json passes:true via Memory.mark_passed only
+        features = json.loads((mem.state_dir / "feature_list.json").read_text())
+        assert features[0]["passes"] is True
+        assert features[0]["evidence"] == ["always"]
+
+
+class TestBlueprintPersistenceRedaction:
+    def test_persist_blueprint_redacts_secrets(self, tmp_path):
+        mem = Memory(root=tmp_path / "mem")
+        secret = "sk-abcdef0123456789ABCDEF"  # API-key shape -> must redact
+        bp = Blueprint(steps=[Step(id="s1",
+                                   action=f"call the API with {secret}",
+                                   verifier="pytest")])
+        agent = loop_module.Agent(memory=mem)  # no gate -> ok_unverified
+        FakeClient.script = [text_turn("done")]
+        result = agent.run("task", blueprint=bp)
+        assert result.status == "ok_unverified"
+        plan = (mem.state_dir / "plan.md").read_text()
+        features = (mem.state_dir / "feature_list.json").read_text()
+        assert secret not in plan
+        assert secret not in features
+        assert "[REDACTED]" in plan
+        assert "[REDACTED]" in features
+
+
+class TestCheckpointWriteFailure:
+    def test_checkpoint_write_failure_is_not_reported_as_saved(
+        self, tmp_path, monkeypatch
+    ):
+        mem = Memory(root=tmp_path / "mem")
+
+        def boom(_cp):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mem, "checkpoint", boom)
+        big = dict(USAGE, input_tokens=900_000)  # 0.9 of the 1M window
+        FakeClient.script = [
+            tool_turn("write_note", {"content": "x"}, usage=big),
+            text_turn("never reached"),
+        ]
+        result = run("heavy context", tools=[write_note], memory=mem,
+                     budget_usd=50.0)
+        assert result.status != "checkpointed"
+        assert result.checkpoint_path is None
+        assert "not saved" in result.output.lower()
+
+
+class TestResumeDetection:
+    def test_fresh_run_gets_memory_index_not_resume_litany(self, tmp_path):
+        mem = Memory(root=tmp_path / "mem")  # no checkpoint, no progress
+        agent = loop_module.Agent(memory=mem)
+        FakeClient.script = [text_turn("done")]
+        agent.run("fresh task")
+        first_msg = FakeClient.calls[0]["messages"][0]["content"]
+        assert "You are resuming an interrupted run" not in first_msg
+        assert "<memory_index>" in first_msg
+
+    def test_run_with_persisted_checkpoint_gets_resume_litany(self, tmp_path):
+        mem = Memory(root=tmp_path / "mem")
+        mem.checkpoint(Checkpoint(
+            goal="prior goal", decisions=(), files_touched=(),
+            verified_done=(), open_issues=(), next_steps=("do X",), lessons=(),
+        ))
+        agent = loop_module.Agent(memory=mem)
+        FakeClient.script = [text_turn("done")]
+        agent.run("resume task")
+        first_msg = FakeClient.calls[0]["messages"][0]["content"]
+        assert "You are resuming an interrupted run" in first_msg

@@ -163,10 +163,24 @@ def _run_fresh(cmd: str, cwd: Path) -> tuple[int, str]:
 
 def _read_artifacts(paths: Sequence[Path | str], workspace: Path | None = None) -> str:
     parts: list[str] = []
+    # When a workspace is given, every artifact path is model-supplied and
+    # therefore untrusted: it is resolved (following ``..`` and symlinks) and
+    # must land inside the workspace, or it is REJECTED unread. Reading an
+    # escaping path (e.g. ``/etc/passwd`` or ``../../secrets``) into a
+    # downstream model call is host-file exfiltration.
+    root = workspace.resolve() if workspace is not None else None
     for raw in list(paths)[:_MAX_ARTIFACTS_SHOWN]:
         path = Path(raw)
-        if not path.is_absolute() and workspace is not None:
-            path = workspace / path
+        if root is not None:
+            candidate = path if path.is_absolute() else root / path
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(root):
+                parts.append(
+                    f"## Artifact: {raw}\n(REJECTED: path escapes the workspace "
+                    f"-- not read)"
+                )
+                continue
+            path = resolved
         if path.exists() and path.is_file():
             text = path.read_text(encoding="utf-8", errors="replace")
             if len(text) > _ARTIFACT_CAP_CHARS:
@@ -544,6 +558,11 @@ def audit_claims(report: dict, ledger: UsageLedger) -> GateResult:
     record exists, is not an error, and (when an exit code was captured)
     exited 0. The ledger recorded ground truth BEFORE truncation/shaping, so
     the model cannot cite output the harness never saw.
+
+    Decisiveness: a completion claim must be grounded in at least one *decisive*
+    record -- a command/tool result that carries an exit code and exited 0. A
+    non-decisive tool call (a think/read with no exit code) cannot on its own
+    certify "tests pass"; a claim citing only such calls is UNGROUNDED.
     """
     evidence: list[Evidence] = []
     failures: list[Evidence] = []
@@ -562,6 +581,7 @@ def audit_claims(report: dict, ledger: UsageLedger) -> GateResult:
             failures.append(ev)
             continue
         bad: list[str] = []
+        decisive = False  # at least one cited record carries exit_code == 0
         for tool_use_id in ids:
             record = ledger.evidence_for(tool_use_id)
             if record is None:
@@ -570,6 +590,14 @@ def audit_claims(report: dict, ledger: UsageLedger) -> GateResult:
                 bad.append(f"{tool_use_id}: tool call errored")
             elif record["exit_code"] not in (0, None):
                 bad.append(f"{tool_use_id}: exit code {record['exit_code']}")
+            elif record["exit_code"] == 0:
+                decisive = True
+        if not bad and not decisive:
+            bad.append(
+                "UNGROUNDED: completion claim cites only non-decisive tool "
+                "calls (no command/tool result carrying an exit code); it must "
+                "be certified by a decisive check that exited 0"
+            )
         ev = Evidence(name=label, passed=not bad, detail="; ".join(bad))
         evidence.append(ev)
         if bad:
@@ -657,7 +685,10 @@ def refute_vote(
             )
         )
     refutations = tuple(r for r in results if r is not None)
-    survived = len(refutations) <= k // 2
+    # Strict majority must find NO counterexample for the artifact to survive.
+    # ``len(refutations) * 2 < k`` rejects an even-k tie (e.g. k=4, 2 refuters
+    # find a counterexample): a tie is not a majority, so it does not survive.
+    survived = len(refutations) * 2 < k
     return survived, refutations
 
 
@@ -769,19 +800,38 @@ def assert_red(test_cmd: str, workspace: Path) -> Evidence:
 
     A test that passes against the unimplemented code is vacuous -- it will
     also pass against a wrong implementation. Runs in a fresh subprocess.
-    For pytest, exit 5 ("no tests collected") is treated as vacuous too.
+
+    Only a genuine test failure (exit 1) counts as red. Exit 0 (and, for
+    pytest, exit 5 "no tests collected") is vacuous. Every OTHER exit code --
+    a timeout (124), a collection/usage error (pytest 2/3/4), a missing
+    interpreter (127) -- is an infra failure, NOT proof the tests fail for the
+    intended reason, so it is rejected with a distinct diagnostic rather than
+    silently recorded as red.
     """
     code, output = _run_fresh(test_cmd, workspace)
-    vacuous = code == 0 or ("pytest" in test_cmd and code == 5)
+    is_pytest = "pytest" in test_cmd
+    if code == 1:
+        passed = True
+        detail = "tests are RED pre-implementation (good)"
+    elif code == 0 or (is_pytest and code == 5):
+        passed = False
+        detail = (
+            "VACUOUS: tests pass (or collect nothing) before implementation -- "
+            "they cannot verify anything; fix the tests first"
+        )
+    else:
+        passed = False
+        detail = (
+            f"INFRA FAILURE: test command exited {code}, which is not a test "
+            f"failure (exit 1) -- timeout, crash, or collection/usage error. "
+            f"This is not evidence the tests fail for the intended reason; fix "
+            f"the harness and re-run."
+        )
     return Evidence(
         name="assert_red",
-        passed=not vacuous,
+        passed=passed,
         command=test_cmd,
         exit_code=code,
         output_tail=_tail(output),
-        detail=(
-            "tests are RED pre-implementation (good)" if not vacuous else
-            "VACUOUS: tests pass (or collect nothing) before implementation -- "
-            "they cannot verify anything; fix the tests first"
-        ),
+        detail=detail,
     )
