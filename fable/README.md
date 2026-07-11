@@ -171,6 +171,7 @@ docs/
   04-verification.md         The gate ladder, judge discipline, TDD with a harness-owned red test, pass^k evals.
   05-memory-context.md       Cache economics, the 60/75/85 pressure ladder, file-based memory, resume litany.
   06-operations.md           Cost engineering: effort routing, cascades, observability; MiroFish case study.
+  07-mirofish-integration.md Adopting FABLE inside this repo: what the harness absorbs, phased plan, worked example.
 prompts/
   orchestrator.md            Top-level autonomous orchestrator (cannot declare completion — the gate decides).
   planner.md                 Blueprint Author: typed steps, each with a verifier field that IS the routing policy.
